@@ -136,9 +136,13 @@ def intersperse(lst, item):
 
 
 def save_figure_to_numpy(fig):
-    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    return data
+    # Modernised for matplotlib 3.10+ / numpy 2.x:
+    # - `fig.canvas.tostring_rgb()` removed → use `buffer_rgba()` and drop
+    #   the alpha channel for RGB output.
+    # - `np.fromstring` removed → use `np.frombuffer`.
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    w, h = fig.canvas.get_width_height()
+    return buf.reshape(h, w, 4)[:, :, :3]
 
 
 def plot_tensor(tensor):
