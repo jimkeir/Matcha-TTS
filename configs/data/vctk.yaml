@@ -6,7 +6,24 @@ _target_: matcha.data.text_mel_datamodule.TextMelDataModule
 name: vctk
 train_filelist_path: data/filelists/vctk_audio_sid_text_train_filelist.txt
 valid_filelist_path: data/filelists/vctk_audio_sid_text_val_filelist.txt
-batch_size: 32
+# Performance tuning — raised from 32 after the CPU/GPU utilisation
+# profile (CPU ~65 %, GPU ~30 %) showed the 5090 was starved. Matcha is
+# ~21 M params in FP16, so even 64 fits comfortably in 32 GB VRAM. Drop
+# to 48 or 32 if OOM ever trips.
+batch_size: 64
+# Override the 20 inherited from ljspeech.yaml — Windows DataLoader uses
+# spawn (not fork), each worker re-imports the whole training script, and
+# 20 simultaneous spawns tend to deadlock before the first training step.
+# 6 is the sweet spot: enough parallel preprocessing to keep the GPU fed
+# through resample + DP + mel compute, without hitting the Windows
+# process-spawn stall. Drop to 2-4 if worker startup hangs again.
+num_workers: 4
+# Override the ljspeech default (english_cleaners2 → eSpeak-NG, GPL) with
+# the Deep Phonemizer variant (MIT). english_cleaners_dp is defined in
+# matcha/text/cleaners.py alongside english_cleaners2; swap back any time
+# by reverting this line. Any checkpoint is tied to the cleaner it was
+# trained under — mixing them will produce garbled audio.
+cleaners: [english_cleaners_dp]
 add_blank: True
 n_spks: 109
 data_statistics:  # Computed for vctk dataset
