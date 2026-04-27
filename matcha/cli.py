@@ -47,8 +47,17 @@ def plot_spectrogram_to_numpy(spectrogram, filename):
 
 def process_text(i: int, text: str, device: torch.device):
     print(f"[{i}] - Input text: {text}")
+    # Cleaner must match the cleaner the loaded checkpoint was trained
+    # under. All three of our data configs (vctk / commonvoice /
+    # voxpopuli) train with english_cleaners_dp (Deep Phonemizer, MIT)
+    # rather than the upstream default english_cleaners2 (eSpeak-NG,
+    # GPL). Hardcoding the upstream default here causes inference to
+    # phonemise via espeak — even when our training-side IPA was DP —
+    # which (a) produces a different IPA distribution than the model
+    # was trained on (garbled audio), and (b) requires eSpeak-NG to
+    # be installed (it isn't on a DP-only setup).
     x = torch.tensor(
-        intersperse(text_to_sequence(text, ["english_cleaners2"])[0], 0),
+        intersperse(text_to_sequence(text, ["english_cleaners_dp"])[0], 0),
         dtype=torch.long,
         device=device,
     )[None]
