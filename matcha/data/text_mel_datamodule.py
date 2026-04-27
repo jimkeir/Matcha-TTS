@@ -198,7 +198,15 @@ class TextMelDataset(torch.utils.data.Dataset):
 
     def get_mel(self, filepath):
         audio, sr = ta.load(filepath)
-        assert sr == self.sample_rate
+        # VCTK ships at 48 kHz (wav48_silence_trimmed), but the configs in
+        # this repo target 22050 Hz. Resample on the fly instead of
+        # requiring a pre-resampled corpus on disk — torchaudio's
+        # resample is SoX-quality and the per-load cost is amortised
+        # across many training epochs vs a one-time preprocessing pass.
+        if sr != self.sample_rate:
+            audio = ta.functional.resample(audio, orig_freq=sr,
+                                           new_freq=self.sample_rate)
+            sr = self.sample_rate
         mel = mel_spectrogram(
             audio,
             self.n_fft,

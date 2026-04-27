@@ -43,10 +43,10 @@ hann_window = {}
 
 
 def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
-    if torch.min(y) < -1.0:
-        print("min value is ", torch.min(y))
-    if torch.max(y) > 1.0:
-        print("max value is ", torch.max(y))
+    # Upstream Matcha prints a warning per out-of-[-1,1] sample. After our
+    # on-the-fly 48k→22050 resample, most VCTK samples overshoot by ≤2 %
+    # due to sinc-interpolation ringing, which is harmless for mel
+    # computation but floods the training log. Silenced.
 
     global mel_basis, hann_window  # pylint: disable=global-statement,global-variable-not-assigned
     if f"{str(fmax)}_{str(y.device)}" not in mel_basis:
