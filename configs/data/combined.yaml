@@ -1,0 +1,21 @@
+# Combined source + target config produced by
+# prepare_transfer_ckpt.py for warm-started transfer training
+# that PRESERVES the source dataset's speakers as low-numbered
+# slots and adds the target dataset's speakers above them.
+#
+# Inherits from commonvoice.yaml (which itself inherits
+# from ljspeech.yaml). Overrides only the fields that
+# necessarily differ for the combined dataset.
+defaults:
+  - commonvoice
+  - _self_
+
+batch_size: 6
+
+name: combined
+n_spks: 373
+train_filelist_path: data/filelists/combined_audio_sid_text_train_filelist.txt
+valid_filelist_path: data/filelists/combined_audio_sid_text_val_filelist.txt
+data_statistics:  # auto-written by prep_common.report_mel_statistics
+  mel_mean: -5.9612686864
+  mel_std: 2.4330192160

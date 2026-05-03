@@ -3,9 +3,9 @@ defaults:
   - _self_
 
 _target_: matcha.data.text_mel_datamodule.TextMelDataModule
-name: vctk
-train_filelist_path: data/filelists/vctk_audio_sid_text_train_filelist.txt
-valid_filelist_path: data/filelists/vctk_audio_sid_text_val_filelist.txt
+name: commonvoice
+train_filelist_path: data/filelists/commonvoice_audio_sid_text_train_filelist.txt
+valid_filelist_path: data/filelists/commonvoice_audio_sid_text_val_filelist.txt
 # Performance tuning — raised from 32 after the CPU/GPU utilisation
 # profile (CPU ~65 %, GPU ~30 %) showed the 5090 was starved. Matcha is
 # ~21 M params in FP16, so even 64 fits comfortably in 32 GB VRAM. Drop
@@ -25,10 +25,13 @@ num_workers: 4
 # trained under — mixing them will produce garbled audio.
 cleaners: [english_cleaners_dp]
 add_blank: True
-# Raw VCTK-Corpus-0.92 has 109 speaker directories but p315 ships without
-# transcripts, so our prepare_vctk_filelists.py drops that one and trains
-# 108 speakers. The model's speaker embedding table is sized on n_spks.
-n_spks: 109
-data_statistics:  # Computed for vctk dataset
-  mel_mean: -6.630575
-  mel_std: 2.482914
+# Speaker count produced by prepare_commonvoice_filelists.py with
+# --speakers-per-accent 15 --min-utts-per-speaker 15
+# against the on-disk slice. Re-run the prep script
+# and update this number whenever the on-disk dataset or selection
+# flags change. The model's speaker embedding table is sized on
+# n_spks, so it must match the distinct sids in the train filelist.
+n_spks: 135
+data_statistics:  # Computed for commonvoice dataset
+  mel_mean: -6.2995671876
+  mel_std: 2.6458899159

@@ -17,5 +17,5 @@ model_checkpoint:
   # days-long full-corpus run but leaves the smoke-test blind for ~2-3 h.
   # Dropped to 5 so mid-training progress is testable every ~5-10 min at the
   # 5090's ~1-2 min/epoch throughput on this 8-speaker subset.
-  every_n_epochs: 5 # number of epochs between checkpoints
+  every_n_epochs: 1 # number of epochs between checkpoints
   save_on_train_epoch_end: null # whether to run checkpointing at the end of the training epoch or the end of validation

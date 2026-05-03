@@ -3,14 +3,13 @@ defaults:
   - _self_
 
 _target_: matcha.data.text_mel_datamodule.TextMelDataModule
-name: vctk
-train_filelist_path: data/filelists/vctk_audio_sid_text_train_filelist.txt
-valid_filelist_path: data/filelists/vctk_audio_sid_text_val_filelist.txt
-# Performance tuning — raised from 32 after the CPU/GPU utilisation
-# profile (CPU ~65 %, GPU ~30 %) showed the 5090 was starved. Matcha is
-# ~21 M params in FP16, so even 64 fits comfortably in 32 GB VRAM. Drop
-# to 48 or 32 if OOM ever trips.
-batch_size: 64
+name: voxpopuli
+train_filelist_path: data/filelists/voxpopuli_audio_sid_text_train_filelist.txt
+valid_filelist_path: data/filelists/voxpopuli_audio_sid_text_val_filelist.txt
+# Performance tuning — reduced from 64 to 8 due to the length of voxpopuli
+# audio. Received memory errors on a machine with 96Mb RAM and 32Gb VRAM.
+# Possibly increase to 16 if 8 works.
+batch_size: 8
 # Override the 20 inherited from ljspeech.yaml — Windows DataLoader uses
 # spawn (not fork), each worker re-imports the whole training script, and
 # 20 simultaneous spawns tend to deadlock before the first training step.
@@ -28,7 +27,7 @@ add_blank: True
 # Raw VCTK-Corpus-0.92 has 109 speaker directories but p315 ships without
 # transcripts, so our prepare_vctk_filelists.py drops that one and trains
 # 108 speakers. The model's speaker embedding table is sized on n_spks.
-n_spks: 109
-data_statistics:  # Computed for vctk dataset
-  mel_mean: -6.630575
-  mel_std: 2.482914
+n_spks: 129
+data_statistics:  # Computed for voxpopuli dataset
+  mel_mean: -5.4063397819
+  mel_std: 2.1506460760
