@@ -1,4 +1,13 @@
 _target_: torch.optim.Adam
 _partial_: true
 lr: 1e-4
-weight_decay: 0.0
+# Gentle L2 regularisation. Upstream matcha-tts ships with weight_decay=0
+# (no regularisation), which works fine for short bring-up runs but lets
+# weights drift large over multi-day continuation training. The 2026-05-01
+# overnight run grew matcha decoder/encoder weights ~2x relative to the
+# 2026-04-30 run, which pushed fp16 inference past the saturation point of
+# Softmax / InstanceNorm / Pow (decomposed-LayerNorm variance) and produced
+# silent ONNX on DirectML/Blackwell. 1e-6 is small enough not to perturb
+# convergence but large enough to bound long-run weight magnitude.
+# Applies to new training runs only; doesn't retroactively fix existing ckpts.
+weight_decay: 1.0e-6
