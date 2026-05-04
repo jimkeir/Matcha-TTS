@@ -101,6 +101,18 @@ def load_hifigan(checkpoint_path, device):
 
 def load_vocoder(vocoder_name, checkpoint_path, device):
     print(f"[!] Loading {vocoder_name}!")
+    if vocoder_name == "vocos":
+        # Vocos lives outside matcha's package tree (in scripts/atc/matcha_tts/
+        # vocos_loader.py); the export script puts that dir on PYTHONPATH so the
+        # import resolves. Vocos has no equivalent of HiFi-GAN's denoiser, so
+        # the loader returns (vocoder, None) and we forward that as-is —
+        # matcha.onnx.export discards the second tuple element anyway, and the
+        # CLI synthesis path falls back to a no-op when denoiser is None.
+        from vocos_loader import load_vocos
+        vocoder, denoiser = load_vocos(checkpoint_path, device)
+        print(f"[+] {vocoder_name} loaded!")
+        return vocoder, denoiser
+
     vocoder = None
     if vocoder_name in ("hifigan_T2_v1", "hifigan_univ_v1"):
         vocoder = load_hifigan(checkpoint_path, device)

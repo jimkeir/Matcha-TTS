@@ -103,7 +103,11 @@ def main():
     parser.add_argument(
         "--vocoder-name",
         type=str,
-        choices=list(VOCODER_URLS.keys()),
+        # Allow "vocos" alongside the upstream HiFi-GAN names. matcha.cli's
+        # load_vocoder dispatches on the same string and raises
+        # NotImplementedError for unknown names, so the validation still
+        # happens — just one layer down rather than at parse time.
+        choices=list(VOCODER_URLS.keys()) + ["vocos"],
         default=None,
         help="Name of the vocoder to embed in the ONNX graph",
     )
