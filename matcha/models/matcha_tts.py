@@ -73,7 +73,8 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         self.update_data_statistics(data_statistics)
 
     @torch.inference_mode()
-    def synthesise(self, x, x_lengths, n_timesteps, temperature=1.0, spks=None, length_scale=1.0):
+    def synthesise(self, x, x_lengths, n_timesteps, temperature=1.0, spks=None, length_scale=1.0,
+                   fixed_out_length=None):
         """
         Generates mel-spectrogram from text. Returns:
             1. encoder outputs
@@ -121,8 +122,24 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         w = torch.exp(logw) * x_mask
         w_ceil = torch.ceil(w) * length_scale
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-        y_max_length = y_lengths.max()
-        y_max_length_ = fix_len_compatibility(y_max_length)
+
+        # fixed_out_length pins the mel/time dimension to a compile-time
+        # constant (a python int, multiple of 4). This is used ONLY for the
+        # static-shape CoreML export: the decoder/mask/alignment then build at
+        # a fixed width so MIL sees no value-dependent (unbounded) dims. The
+        # real per-utterance length still lives in y_lengths → mel_lengths,
+        # and y_mask zeroes the pad tail to silence, so the runtime trims to
+        # the true length. fixed_out_length=None keeps the original
+        # data-dependent behaviour (training + the dynamic ONNX export) byte-
+        # identical. NOTE: callers MUST size fixed_out_length so no utterance's
+        # y_lengths exceeds it, or the tail is truncated.
+        if fixed_out_length is not None:
+            y_max_length_ = fixed_out_length            # python int → static arange/slices
+            slice_len = fixed_out_length
+        else:
+            y_max_length = y_lengths.max()
+            y_max_length_ = fix_len_compatibility(y_max_length)
+            slice_len = y_max_length
 
         # Using obtained durations `w` construct alignment map `attn`
         y_mask = sequence_mask(y_lengths, y_max_length_).unsqueeze(1).to(x_mask.dtype)
@@ -132,11 +149,11 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         # Align encoded text and get mu_y
         mu_y = torch.matmul(attn.squeeze(1).transpose(1, 2), mu_x.transpose(1, 2))
         mu_y = mu_y.transpose(1, 2)
-        encoder_outputs = mu_y[:, :, :y_max_length]
+        encoder_outputs = mu_y[:, :, :slice_len]
 
         # Generate sample tracing the probability flow
         decoder_outputs = self.decoder(mu_y, y_mask, n_timesteps, temperature, spks)
-        decoder_outputs = decoder_outputs[:, :, :y_max_length]
+        decoder_outputs = decoder_outputs[:, :, :slice_len]
 
         t = (dt.datetime.now() - t).total_seconds()
         rtf = t * 22050 / (decoder_outputs.shape[-1] * 256)
@@ -144,7 +161,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         return {
             "encoder_outputs": encoder_outputs,
             "decoder_outputs": decoder_outputs,
-            "attn": attn[:, :, :y_max_length],
+            "attn": attn[:, :, :slice_len],
             "mel": denormalize(decoder_outputs, self.mel_mean, self.mel_std),
             "mel_lengths": y_lengths,
             "rtf": rtf,

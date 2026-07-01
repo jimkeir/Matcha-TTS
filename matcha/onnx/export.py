@@ -32,10 +32,15 @@ class MatchaWithVocoder(LightningModule):
         return wavs.squeeze(1), lengths
 
 
-def get_exportable_module(matcha, vocoder, n_timesteps):
+def get_exportable_module(matcha, vocoder, n_timesteps, fixed_out_length=None):
     """
     Return an appropriate `LighteningModule` and output-node names
-    based on whether the vocoder is embedded in  the final graph
+    based on whether the vocoder is embedded in  the final graph.
+
+    fixed_out_length (int|None): when set, the mel/time dimension is pinned to
+    this constant (multiple of 4) for a fully-static export — see
+    MatchaTTS.synthesise. Used for the CoreML/MLProgram static models; leave
+    None for the default dynamic export.
     """
 
     def onnx_forward_func(x, x_lengths, scales, spks=None):
@@ -46,7 +51,8 @@ def get_exportable_module(matcha, vocoder, n_timesteps):
         # Extract scaler parameters from tensors
         temperature = scales[0]
         length_scale = scales[1]
-        output = matcha.synthesise(x, x_lengths, n_timesteps, temperature, spks, length_scale)
+        output = matcha.synthesise(x, x_lengths, n_timesteps, temperature, spks, length_scale,
+                                   fixed_out_length=fixed_out_length)
         return output["mel"], output["mel_lengths"]
 
     # Monkey-patch Matcha's forward function
@@ -60,11 +66,12 @@ def get_exportable_module(matcha, vocoder, n_timesteps):
     return model, output_names
 
 
-def get_inputs(is_multi_speaker):
+def get_inputs(is_multi_speaker, dummy_input_length=50):
     """
-    Create dummy inputs for tracing
+    Create dummy inputs for tracing. dummy_input_length sets x's traced
+    phoneme-axis size; for a static export (time axis not in dynamic_axes)
+    this becomes the model's fixed input length, so pass the tier size.
     """
-    dummy_input_length = 50
     x = torch.randint(low=0, high=20, size=(1, dummy_input_length), dtype=torch.long)
     x_lengths = torch.LongTensor([dummy_input_length])
 
@@ -118,8 +125,30 @@ def main():
         help="Vocoder checkpoint to embed  in the ONNX graph for an `e2e` like experience",
     )
     parser.add_argument("--opset", type=int, default=DEFAULT_OPSET, help="ONNX opset version to use (default 15")
+    parser.add_argument(
+        "--fixed-length", type=int, default=None,
+        help="Export a STATIC-shape model: fix the input phoneme axis to this "
+             "many tokens (no dynamic 'time' axis). Required together with "
+             "--out-frames. Used for the CoreML/MLProgram tier models; omit "
+             "for the default dynamic export consumed by CPU/DirectML.",
+    )
+    parser.add_argument(
+        "--out-frames", type=int, default=None,
+        help="Static mel/output length (Y_MAX) baked into the decoder when "
+             "--fixed-length is set. Must be a multiple of 4 and >= the largest "
+             "mel-frame count any chunk of --fixed-length phonemes produces "
+             "(undersize = truncated audio). Size from the runtime mel-frame "
+             "histogram (GATHER_PHONEME_STATS).",
+    )
 
     args = parser.parse_args()
+
+    static_export = args.fixed_length is not None or args.out_frames is not None
+    if static_export:
+        if args.fixed_length is None or args.out_frames is None:
+            parser.error("--fixed-length and --out-frames must be given together.")
+        if args.out_frames % 4 != 0:
+            parser.error("--out-frames must be a multiple of 4 (fix_len_compatibility).")
 
     print(f"[🍵] Loading Matcha checkpoint from {args.checkpoint_path}")
     print(f"Setting n_timesteps to {args.n_timesteps}")
@@ -137,30 +166,51 @@ def main():
 
     is_multi_speaker = matcha.n_spks > 1
 
-    dummy_input, input_names = get_inputs(is_multi_speaker)
-    model, output_names = get_exportable_module(matcha, vocoder, args.n_timesteps)
+    dummy_len = args.fixed_length if static_export else 50
+    dummy_input, input_names = get_inputs(is_multi_speaker, dummy_input_length=dummy_len)
+    model, output_names = get_exportable_module(
+        matcha, vocoder, args.n_timesteps,
+        fixed_out_length=(args.out_frames if static_export else None),
+    )
 
-    # Set dynamic shape for inputs/outputs
-    dynamic_axes = {
-        "x": {0: "batch_size", 1: "time"},
-        "x_lengths": {0: "batch_size"},
-    }
-
-    if vocoder is None:
-        dynamic_axes.update(
-            {
-                "mel": {0: "batch_size", 2: "time"},
-                "mel_lengths": {0: "batch_size"},
-            }
-        )
+    # Dynamic-axes map. For a static export we keep ONLY batch_size dynamic and
+    # drop every 'time' axis, so the phoneme (input) and mel/wav (output)
+    # dimensions are concrete integers throughout — the precondition CoreML
+    # MLProgram needs. The dynamic export keeps the original time axes.
+    if static_export:
+        print(f"Static export: input phonemes fixed to {args.fixed_length}, "
+              f"output mel frames fixed to {args.out_frames}.")
+        dynamic_axes = {
+            "x": {0: "batch_size"},
+            "x_lengths": {0: "batch_size"},
+        }
+        if vocoder is None:
+            dynamic_axes.update({"mel": {0: "batch_size"}, "mel_lengths": {0: "batch_size"}})
+        else:
+            print("Embedding the vocoder in the ONNX graph")
+            dynamic_axes.update({"wav": {0: "batch_size"}, "wav_lengths": {0: "batch_size"}})
     else:
-        print("Embedding the vocoder in the ONNX graph")
-        dynamic_axes.update(
-            {
-                "wav": {0: "batch_size", 1: "time"},
-                "wav_lengths": {0: "batch_size"},
-            }
-        )
+        # Set dynamic shape for inputs/outputs
+        dynamic_axes = {
+            "x": {0: "batch_size", 1: "time"},
+            "x_lengths": {0: "batch_size"},
+        }
+
+        if vocoder is None:
+            dynamic_axes.update(
+                {
+                    "mel": {0: "batch_size", 2: "time"},
+                    "mel_lengths": {0: "batch_size"},
+                }
+            )
+        else:
+            print("Embedding the vocoder in the ONNX graph")
+            dynamic_axes.update(
+                {
+                    "wav": {0: "batch_size", 1: "time"},
+                    "wav_lengths": {0: "batch_size"},
+                }
+            )
 
     if is_multi_speaker:
         dynamic_axes["spks"] = {0: "batch_size"}
