@@ -40,9 +40,14 @@ tags: ["dev"]
 # set False to skip model training
 train: True
 
-# evaluate on test set, using best model weights achieved during training
-# lightning chooses best weights based on the metric specified in checkpoint callback
-test: True
+# MatchaTTS defines no test_step(), so trainer.test() dies with a
+# MisconfigurationException AFTER a fully successful fit - every completed run
+# ended on a spurious traceback. Off until a test_step exists.
+test: False
+
+# torch.compile the LightningModule before fit (dynamic=True; see train.py).
+# Enabled per-experiment rather than globally.
+compile: False
 
 # simply provide checkpoint path to resume training
 ckpt_path: null

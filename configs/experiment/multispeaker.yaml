@@ -12,3 +12,7 @@ defaults:
 tags: ["multispeaker"]
 
 run_name: multispeaker
+
+# Inductor compile of the training step (see train.py). Disable from the CLI
+# with compile=false if a torch upgrade makes it misbehave.
+compile: True

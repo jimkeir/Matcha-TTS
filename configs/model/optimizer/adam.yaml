@@ -11,3 +11,7 @@ lr: 1e-4
 # convergence but large enough to bound long-run weight magnitude.
 # Applies to new training runs only; doesn't retroactively fix existing ckpts.
 weight_decay: 1.0e-6
+# NOT fused: Lightning's AMP plugin refuses gradient clipping with a fused
+# optimizer ("performs unscaling of gradients internally"), and this recipe's
+# trainer sets gradient_clip_val: 5.0 - clipping is part of the proven
+# convergence setup and beats the small fused-kernel win. Tried 2026-08-04.

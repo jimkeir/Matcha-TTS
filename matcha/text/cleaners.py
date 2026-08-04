@@ -152,11 +152,18 @@ def _get_dp_phonemizer():
             #   ..       = matcha/
             #   ../..    = Matcha-TTS-source/
             #   ../../.. = matcha_tts/
-            # Then into cmudict-0.7b/ where the checkpoint lives.
+            # The checkpoint lives under Datasets/cmudict-0.7b/ alongside the
+            # other corpora; the bare cmudict-0.7b/ root location is accepted
+            # as a legacy fallback.
             here = os.path.dirname(os.path.abspath(__file__))
-            ckpt = os.path.normpath(os.path.join(
-                here, "..", "..", "..",
-                "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"))
+            root = os.path.normpath(os.path.join(here, "..", "..", ".."))
+            for cand in (
+                os.path.join(root, "Datasets", "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
+                os.path.join(root, "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
+            ):
+                ckpt = cand
+                if os.path.isfile(ckpt):
+                    break
         if not os.path.isfile(ckpt):
             raise FileNotFoundError(
                 f"DP checkpoint not found at {ckpt}. Set MATCHA_DP_CHECKPOINT "

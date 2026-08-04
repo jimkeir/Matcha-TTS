@@ -7,8 +7,11 @@ max_epochs: -1
 accelerator: gpu
 devices: [0]
 
-# mixed precision for extra speed-up
-precision: 16-mixed
+# Mixed precision for extra speed-up. bf16 rather than fp16: on Blackwell the
+# throughput is the same, but bf16's fp32-range exponent removes the GradScaler
+# machinery and its loss-scale hiccups entirely (and avoids the fp16 saturation
+# class of problem noted in model/optimizer/adam.yaml).
+precision: bf16-mixed
 
 # perform a validation loop every N training epochs
 check_val_every_n_epoch: 1

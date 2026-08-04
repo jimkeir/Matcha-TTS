@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import hydra
 import lightning as L
 import rootutils
+import torch
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
@@ -30,6 +31,11 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 log = utils.get_pylogger(__name__)
 
+# TF32 for whatever matmuls autocast leaves in fp32 (optimizer state math, the
+# odd fp32 island). Free tensor-core throughput on Ampere+; training-only, so
+# export/inference numerics are unaffected.
+torch.set_float32_matmul_precision("high")
+
 
 @utils.task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -51,6 +57,19 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     log.info(f"Instantiating model <{cfg.model._target_}>")  # pylint: disable=protected-access
     model: LightningModule = hydra.utils.instantiate(cfg.model)
+
+    if cfg.get("compile"):
+        # Inductor-compile the compute-heavy submodules only. Compiling the whole
+        # LightningModule sends Dynamo through Lightning's self.log() plumbing,
+        # which dies with InternalTorchDynamoError ('method' has no __dict__,
+        # torch 2.13 + lightning 2.6). The text encoder and the CFM estimator
+        # (flow-matching UNet) are the bulk of the step cost anyway; MAS stays
+        # eager. dynamic=True because batches are variable-length - avoids a
+        # recompile per new sequence length. Requires triton-windows + cl.exe
+        # on PATH (train_vctk.bat pulls in vcvars64).
+        log.info("Compiling encoder + CFM estimator with torch.compile (dynamic=True)...")
+        model.encoder = torch.compile(model.encoder, dynamic=True)
+        model.decoder.estimator = torch.compile(model.decoder.estimator, dynamic=True)
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = utils.instantiate_callbacks(cfg.get("callbacks"))
