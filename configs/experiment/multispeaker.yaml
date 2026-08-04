@@ -13,6 +13,11 @@ tags: ["multispeaker"]
 
 run_name: multispeaker
 
-# Inductor compile of the training step (see train.py). Disable from the CLI
-# with compile=false if a torch upgrade makes it misbehave.
-compile: True
+# Inductor compile of the training step (see train.py). Measured 2026-08-04 at
+# full-epoch scale (warm feature cache): a net LOSS on the 5090 - 5:19/epoch vs
+# 2:49 eager. Dynamo's recompile limit trips on the sequence-length long tail
+# (train AND validation shapes), and compile's extra memory pushes peak
+# reserved into the 32 GB ceiling (shared-memory spill stalls). Revisit
+# together with length-bucketed batching, which addresses both causes; the
+# train.py plumbing stays. Enable per-run with compile=true.
+compile: False

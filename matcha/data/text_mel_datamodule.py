@@ -8,6 +8,7 @@ import torchaudio as ta
 from lightning import LightningDataModule
 from torch.utils.data.dataloader import DataLoader
 
+from matcha.data import feature_cache
 from matcha.text import text_to_sequence
 from matcha.utils.audio import mel_spectrogram
 from matcha.utils.model import fix_len_compatibility, normalize
@@ -42,6 +43,7 @@ class TextMelDataModule(LightningDataModule):
         data_statistics,
         seed,
         load_durations,
+        feature_cache_dir=None,
     ):
         super().__init__()
 
@@ -72,6 +74,7 @@ class TextMelDataModule(LightningDataModule):
             self.hparams.data_statistics,
             self.hparams.seed,
             self.hparams.load_durations,
+            self.hparams.feature_cache_dir,
         )
         self.validset = TextMelDataset(  # pylint: disable=attribute-defined-outside-init
             self.hparams.valid_filelist_path,
@@ -88,6 +91,7 @@ class TextMelDataModule(LightningDataModule):
             self.hparams.data_statistics,
             self.hparams.seed,
             self.hparams.load_durations,
+            self.hparams.feature_cache_dir,
         )
 
     def train_dataloader(self):
@@ -145,6 +149,7 @@ class TextMelDataset(torch.utils.data.Dataset):
         data_parameters=None,
         seed=None,
         load_durations=False,
+        feature_cache_dir=None,
     ):
         self.filepaths_and_text = parse_filelist(filelist_path)
         self.n_spks = n_spks
@@ -158,6 +163,18 @@ class TextMelDataset(torch.utils.data.Dataset):
         self.f_min = f_min
         self.f_max = f_max
         self.load_durations = load_durations
+
+        # On-disk feature cache (see matcha/data/feature_cache.py). None ->
+        # default location under Datasets/feature_cache; False/"false" ->
+        # disabled (original compute-every-epoch path); string -> custom root.
+        if feature_cache_dir in (False, "false", "False", 0):
+            self.cache = None
+        else:
+            root = feature_cache_dir or feature_cache.default_cache_root()
+            self.cache = feature_cache.FeatureCache(root)
+            self._mel_params = (n_fft, n_mels, sample_rate, hop_length,
+                                win_length, f_min, f_max)
+            self._phon_sigs = feature_cache.phonemizer_signatures()
 
         if data_parameters is not None:
             self.data_parameters = data_parameters
@@ -202,12 +219,22 @@ class TextMelDataset(torch.utils.data.Dataset):
         return durs
 
     def get_mel(self, filepath):
+        # Cached path: raw (un-normalized) mel from the feature cache;
+        # normalization ALWAYS happens here at load time because mel_mean/std
+        # depend on the dataset combination, not the utterance.
+        key = None
+        if self.cache is not None:
+            key = self.cache.mel_key(filepath, self._mel_params)
+            cached = self.cache.get_mel(key)
+            if cached is not None:
+                mel = torch.from_numpy(cached)
+                return normalize(mel, self.data_parameters["mel_mean"], self.data_parameters["mel_std"])
+
         audio, sr = ta.load(filepath)
         # VCTK ships at 48 kHz (wav48_silence_trimmed), but the configs in
         # this repo target 22050 Hz. Resample on the fly instead of
-        # requiring a pre-resampled corpus on disk — torchaudio's
-        # resample is SoX-quality and the per-load cost is amortised
-        # across many training epochs vs a one-time preprocessing pass.
+        # requiring a pre-resampled corpus on disk — the result is cached, so
+        # the cost is paid once per corpus rather than per epoch.
         if sr != self.sample_rate:
             audio = ta.functional.resample(audio, orig_freq=sr,
                                            new_freq=self.sample_rate)
@@ -223,11 +250,28 @@ class TextMelDataset(torch.utils.data.Dataset):
             self.f_max,
             center=False,
         ).squeeze()
+        if key is not None:
+            self.cache.put_mel(key, mel.numpy())
         mel = normalize(mel, self.data_parameters["mel_mean"], self.data_parameters["mel_std"])
         return mel
 
     def get_text(self, text, add_blank=True):
+        # Cached path: pre-intersperse token IDs (the DP phonemizer is the
+        # expensive part); intersperse/add_blank applied at load so they are
+        # not part of the cache key.
+        key = None
+        if self.cache is not None:
+            key = self.cache.text_key(text, self.cleaners, self._phon_sigs)
+            cached = self.cache.get_text(key)
+            if cached is not None:
+                text_norm, cleaned_text = cached[0].tolist(), cached[1]
+                if self.add_blank:
+                    text_norm = intersperse(text_norm, 0)
+                return torch.IntTensor(text_norm), cleaned_text
+
         text_norm, cleaned_text = text_to_sequence(text, self.cleaners)
+        if key is not None:
+            self.cache.put_text(key, text_norm, cleaned_text)
         if self.add_blank:
             text_norm = intersperse(text_norm, 0)
         text_norm = torch.IntTensor(text_norm)

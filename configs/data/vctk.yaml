@@ -32,3 +32,8 @@ n_spks: 109
 data_statistics:  # Computed for vctk dataset
   mel_mean: -6.630575
   mel_std: 2.482914
+# On-disk per-utterance feature cache (mel + phonemized text); see
+# matcha/data/feature_cache.py. null = default location
+# (<matcha_tts>/Datasets/feature_cache), false = disable (recompute per
+# epoch, the pre-cache behaviour), or an explicit directory path.
+feature_cache_dir: null

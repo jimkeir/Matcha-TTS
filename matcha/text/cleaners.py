@@ -140,30 +140,39 @@ def english_cleaners2(text):
 _dp_phonemizer = None
 
 
+def _resolve_dp_checkpoint():
+    """Resolve the DP checkpoint path (MATCHA_DP_CHECKPOINT env var, else the
+    repo-relative default). Shared by the phonemizer loader below and the
+    feature cache (matcha/data/feature_cache.py), whose text-cache keys must
+    track the same file. May return a non-existent path - callers check."""
+    ckpt = os.environ.get("MATCHA_DP_CHECKPOINT")
+    if not ckpt:
+        # Default: repo-relative path matching our download location.
+        # Three parents up from this file's directory:
+        #   here     = matcha/text/         (dirname of cleaners.py)
+        #   ..       = matcha/
+        #   ../..    = Matcha-TTS-source/
+        #   ../../.. = matcha_tts/
+        # The checkpoint lives under Datasets/cmudict-0.7b/ alongside the
+        # other corpora; the bare cmudict-0.7b/ root location is accepted
+        # as a legacy fallback.
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.normpath(os.path.join(here, "..", "..", ".."))
+        for cand in (
+            os.path.join(root, "Datasets", "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
+            os.path.join(root, "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
+        ):
+            ckpt = cand
+            if os.path.isfile(ckpt):
+                break
+    return ckpt
+
+
 def _get_dp_phonemizer():
     global _dp_phonemizer
     if _dp_phonemizer is None:
         from dp.phonemizer import Phonemizer
-        ckpt = os.environ.get("MATCHA_DP_CHECKPOINT")
-        if not ckpt:
-            # Default: repo-relative path matching our download location.
-            # Three parents up from this file's directory:
-            #   here     = matcha/text/         (dirname of cleaners.py)
-            #   ..       = matcha/
-            #   ../..    = Matcha-TTS-source/
-            #   ../../.. = matcha_tts/
-            # The checkpoint lives under Datasets/cmudict-0.7b/ alongside the
-            # other corpora; the bare cmudict-0.7b/ root location is accepted
-            # as a legacy fallback.
-            here = os.path.dirname(os.path.abspath(__file__))
-            root = os.path.normpath(os.path.join(here, "..", "..", ".."))
-            for cand in (
-                os.path.join(root, "Datasets", "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
-                os.path.join(root, "cmudict-0.7b", "en_us_cmudict_ipa_forward.pt"),
-            ):
-                ckpt = cand
-                if os.path.isfile(ckpt):
-                    break
+        ckpt = _resolve_dp_checkpoint()
         if not os.path.isfile(ckpt):
             raise FileNotFoundError(
                 f"DP checkpoint not found at {ckpt}. Set MATCHA_DP_CHECKPOINT "
