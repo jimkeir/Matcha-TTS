@@ -9,6 +9,7 @@ from lightning import LightningDataModule
 from torch.utils.data.dataloader import DataLoader
 
 from matcha.data import feature_cache
+from matcha.data.bucket_sampler import LengthBucketBatchSampler
 from matcha.text import text_to_sequence
 from matcha.utils.audio import mel_spectrogram
 from matcha.utils.model import fix_len_compatibility, normalize
@@ -44,6 +45,9 @@ class TextMelDataModule(LightningDataModule):
         seed,
         load_durations,
         feature_cache_dir=None,
+        bucket_batching=False,
+        bucket_frame_budget=None,
+        pad_quantum=None,
     ):
         super().__init__()
 
@@ -95,18 +99,34 @@ class TextMelDataModule(LightningDataModule):
         )
 
     def train_dataloader(self):
-        return DataLoader(
+        collate = TextMelBatchCollate(self.hparams.n_spks, pad_quantum=self.hparams.pad_quantum)
+        common = dict(
             dataset=self.trainset,
-            batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
-            shuffle=True,
-            collate_fn=TextMelBatchCollate(self.hparams.n_spks),
+            collate_fn=collate,
             # Keep workers alive between epochs so we don't pay the Windows
             # spawn cost on every validation cycle. Requires num_workers>0;
             # gated so setting num_workers=0 still works.
             persistent_workers=self.hparams.num_workers > 0,
         )
+        if not self.hparams.bucket_batching:
+            return DataLoader(batch_size=self.hparams.batch_size, shuffle=True, **common)
+
+        # Length-bucketed batching (opt-in; overnight-run recipe - see
+        # Final_Training.md and bucket_sampler.py). Requires the feature
+        # cache: batch lengths come from its lengths index.
+        if self.trainset.cache is None:
+            raise ValueError("bucket_batching=true requires the feature cache (feature_cache_dir must not be false)")
+        filepaths = [row[0] for row in self.trainset.filepaths_and_text]
+        lengths = self.trainset.cache.lengths_for(filepaths, self.trainset._mel_params)
+        sampler = LengthBucketBatchSampler(
+            lengths,
+            batch_size=self.hparams.batch_size,
+            frame_budget=self.hparams.bucket_frame_budget,
+            seed=self.hparams.seed,
+        )
+        return DataLoader(batch_sampler=sampler, **common)
 
     def val_dataloader(self):
         return DataLoader(
@@ -115,7 +135,7 @@ class TextMelDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=False,
-            collate_fn=TextMelBatchCollate(self.hparams.n_spks),
+            collate_fn=TextMelBatchCollate(self.hparams.n_spks, pad_quantum=self.hparams.pad_quantum),
             persistent_workers=self.hparams.num_workers > 0,
         )
 
@@ -286,14 +306,26 @@ class TextMelDataset(torch.utils.data.Dataset):
 
 
 class TextMelBatchCollate:
-    def __init__(self, n_spks):
+    def __init__(self, n_spks, pad_quantum=None):
         self.n_spks = n_spks
+        # Optional shape quantization: round padded widths UP to a quantum so
+        # the set of distinct batch shapes is small and bounded - this is what
+        # keeps torch.compile inside its recompile budget. Must be a multiple
+        # of fix_len_compatibility's factor (4). Token lengths are quantized
+        # to a fixed 16 for the same reason. Padding is masked out of every
+        # loss, so this is compute-shape-only.
+        self.pad_quantum = int(pad_quantum) if pad_quantum else None
 
     def __call__(self, batch):
         B = len(batch)
         y_max_length = max([item["y"].shape[-1] for item in batch])  # pylint: disable=consider-using-generator
+        if self.pad_quantum:
+            q = self.pad_quantum
+            y_max_length = ((y_max_length + q - 1) // q) * q
         y_max_length = fix_len_compatibility(y_max_length)
         x_max_length = max([item["x"].shape[-1] for item in batch])  # pylint: disable=consider-using-generator
+        if self.pad_quantum:
+            x_max_length = ((x_max_length + 15) // 16) * 16
         n_feats = batch[0]["y"].shape[-2]
 
         y = torch.zeros((B, n_feats, y_max_length), dtype=torch.float32)
