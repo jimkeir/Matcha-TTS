@@ -18,6 +18,8 @@ FORK-ONLY simplification (deliberate, 2026-08-04): single-device only - no
 rank sharding. An upstream PR would need a distributed-aware rewrite.
 """
 
+import itertools
+
 import numpy as np
 import torch
 
@@ -33,6 +35,7 @@ class LengthBucketBatchSampler:
         self.frame_budget = int(frame_budget) if frame_budget else None
         self.seed = int(seed)
         self._epoch = 0
+        self._fixed = None  # lazily computed constant len; see _fixed_len()
 
     def _schedule(self, epoch):
         rng = np.random.default_rng([self.seed, epoch])
@@ -59,12 +62,28 @@ class LengthBucketBatchSampler:
         for j in rng.permutation(len(batches)):
             yield [int(x) for x in batches[j]]
 
+    def _fixed_len(self):
+        """Constant batches-per-epoch: the minimum schedule length over a
+        sample of packings. The per-epoch re-pack varies the batch count by
+        ~1%, and Lightning captures len(train_dataloader) ONCE at fit start
+        as the validation trigger index ((batch_idx+1) % val_check_batch) —
+        any epoch that packs into FEWER batches silently skips validation
+        (observed: 21 val runs in 109 epochs on the combined set, which
+        starves the val curve and the best-ckpt callback). Reporting the
+        sampled minimum and truncating every schedule to it makes epoch
+        length constant; the dropped tail is a different random ~1% of
+        batches each epoch (batch order is shuffled), training-neutral."""
+        if self._fixed is None:
+            self._fixed = min(
+                sum(1 for _ in self._schedule(e)) for e in range(32)
+            )
+        return self._fixed
+
     def __iter__(self):
         epoch = self._epoch
         self._epoch += 1
-        return self._schedule(epoch)
+        n = self._fixed_len()
+        return itertools.islice(self._schedule(epoch), n)
 
     def __len__(self):
-        # Peek at the upcoming epoch's schedule without consuming it. Exact,
-        # at the cost of one extra schedule generation per epoch (cheap).
-        return sum(1 for _ in self._schedule(self._epoch))
+        return self._fixed_len()

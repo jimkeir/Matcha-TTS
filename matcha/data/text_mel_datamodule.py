@@ -129,15 +129,42 @@ class TextMelDataModule(LightningDataModule):
         return DataLoader(batch_sampler=sampler, **common)
 
     def val_dataloader(self):
-        return DataLoader(
+        common = dict(
             dataset=self.validset,
-            batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
-            shuffle=False,
             collate_fn=TextMelBatchCollate(self.hparams.n_spks, pad_quantum=self.hparams.pad_quantum),
             persistent_workers=self.hparams.num_workers > 0,
         )
+        if not self.hparams.bucket_batching:
+            return DataLoader(batch_size=self.hparams.batch_size, shuffle=False, **common)
+
+        # Frame-budget the val batches too. A flat batch_size loader lets one
+        # long utterance (VoxPopuli has ~60 s parliamentary segments) inflate
+        # the padding of a whole 64-batch — the monotonic-align matrix for
+        # that batch is O(B * max_text * max_mel) on BOTH GPU and CPU and
+        # OOMs, while train survives because its sampler bounds frames by
+        # construction. Deterministic packing (no shuffle): ascending length
+        # sort, greedy fill under the same budget/batch-size caps.
+        if self.validset.cache is None:
+            raise ValueError("bucket_batching=true requires the feature cache (feature_cache_dir must not be false)")
+        filepaths = [row[0] for row in self.validset.filepaths_and_text]
+        lengths = self.validset.cache.lengths_for(filepaths, self.validset._mel_params)
+        budget = self.hparams.bucket_frame_budget
+        order = sorted(range(len(lengths)), key=lambda i: int(lengths[i]))
+        batches, cur = [], []
+        for i in order:
+            li = int(lengths[i])  # ascending: li is the padded width if i joins
+            if cur and ((budget and (len(cur) + 1) * li > budget)
+                        or len(cur) >= self.hparams.batch_size):
+                batches.append(cur)
+                cur = []
+            cur.append(i)
+        if cur:
+            batches.append(cur)
+        # A plain list-of-lists is a valid batch_sampler and re-iterates
+        # identically every epoch.
+        return DataLoader(batch_sampler=batches, **common)
 
     def teardown(self, stage: Optional[str] = None):
         """Clean up after fit or test."""

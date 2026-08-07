@@ -3,19 +3,27 @@
 model_checkpoint:
   _target_: lightning.pytorch.callbacks.ModelCheckpoint
   dirpath: ${paths.output_dir}/checkpoints # directory to save the model file
-  filename: checkpoint_{epoch:03d}  # checkpoint filename
-  monitor: epoch # name of the logged metric which determines when model is improving
+  # Keep the 3 BEST checkpoints by val loss with the metric in the filename
+  # (mirrors the vocos ModelCheckpoint in vocos_xplane_atc.yaml) — the best
+  # run is identifiable at a glance and unattended overnight runs can't
+  # overwrite it with a worse one. last.ckpt remains the resume/export
+  # contract (quick_synth_check, export_last_to_onnx, Phase 2 transfer).
+  #
+  # loss/val_epoch = epoch-aggregated total val loss logged as "loss/val"
+  # (on_epoch=True) in baselightningmodule.py. auto_insert_metric_name must
+  # be off because the metric name contains '/'; the {loss/val_epoch:...}
+  # token below is substituted whole, so no slash reaches the filename.
+  filename: checkpoint_epoch={epoch:03d}_val={loss/val_epoch:.4f}
+  monitor: loss/val_epoch # name of the logged metric which determines when model is improving
   verbose: False # verbosity mode
   save_last: true # additionally always save an exact copy of the last checkpoint to a file last.ckpt
-  save_top_k: 10 # save k best models (determined by above metric)
-  mode: "max" # "max" means higher metric value is better, can be also "min"
-  auto_insert_metric_name: True # when True, the checkpoints filenames will contain the metric name
+  save_top_k: 3 # save k best models (determined by above metric)
+  mode: "min" # "max" means higher metric value is better, can be also "min"
+  auto_insert_metric_name: False # must stay False: metric name contains '/'
   save_weights_only: False # if True, then only the model’s weights will be saved
   every_n_train_steps: null # number of training steps between checkpoints
   train_time_interval: null # checkpoints are monitored at the specified time interval
   # Upstream default was 100 epochs between checkpoints — appropriate for a
   # days-long full-corpus run but leaves the smoke-test blind for ~2-3 h.
-  # Dropped to 5 so mid-training progress is testable every ~5-10 min at the
-  # 5090's ~1-2 min/epoch throughput on this 8-speaker subset.
   every_n_epochs: 1 # number of epochs between checkpoints
-  save_on_train_epoch_end: null # whether to run checkpointing at the end of the training epoch or the end of validation
+  save_on_train_epoch_end: False # decide after validation so the val metric is fresh

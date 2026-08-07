@@ -132,7 +132,7 @@ class FeatureCache:
         """Mel frame count per audio file, for length-bucketed batching -
         WITHOUT decoding audio. Sources, in order: the persisted lengths map
         (instant), the cached mel entry's npy header (cheap), else a
-        torchaudio.info duration estimate (~1% accurate; replaced by the
+        soundfile-header duration estimate (~1% accurate; replaced by the
         exact value once the mel is cached and the map is rebuilt).
 
         Keys are mel_key()s, so entries self-invalidate exactly like mels.
@@ -189,12 +189,14 @@ class FeatureCache:
 
     @staticmethod
     def _frames_estimate(filepath, mel_params):
-        """Duration-based estimate from container metadata (no decode)."""
-        import torchaudio as ta
+        """Duration-based estimate from container metadata (no decode).
+        soundfile, not torchaudio: torchaudio dropped its `info` API when
+        decoding moved to torchcodec (torch 2.13-era stack)."""
+        import soundfile as sf
 
         sample_rate, hop_length = int(float(mel_params[2])), int(float(mel_params[3]))
-        info = ta.info(filepath)
-        resampled = info.num_frames * sample_rate / info.sample_rate
+        info = sf.info(filepath)
+        resampled = info.frames * sample_rate / info.samplerate
         return max(1, int(resampled // hop_length))
 
 
