@@ -29,9 +29,39 @@ class SinusoidalPosEmb(torch.nn.Module):
         return emb
 
 
+def _masked_group_norm(h, mask, gn):
+    """GroupNorm with statistics over REAL frames only. nn.GroupNorm on
+    (B, C, T) reduces over channels AND the whole time axis, so in a padded
+    batch the zero tail dilutes every real frame's mean/var — a short item
+    batched with much longer ones normalizes differently than it would
+    unbatched (the last piece of the batched-run corruption, 2026-08-18).
+    Masked statistics make batched items numerically match their unbatched
+    selves; with an all-ones mask (unbatched) this reduces to nn.GroupNorm
+    exactly. Plain reduce ops — ONNX-export friendly."""
+    b, c, t = h.shape
+    g = gn.num_groups
+    hg = h.view(b, g, c // g, t)
+    mg = mask.view(b, 1, 1, t)
+    cnt = (mg.sum(dim=(2, 3), keepdim=True) * (c // g)).clamp_min(1.0)
+    # Divide BEFORE reducing: a raw ReduceSum over thousands of ~1e2 terms
+    # overflows fp16 on DirectML (CPU EP upcasts and hides it — the whole
+    # model went silent on DML, the exact failure signature the fp16
+    # op_block_list comment in export_last_to_onnx.py documents). With the
+    # weights pre-scaled by 1/count every summand is O(value/count), so the
+    # reduction stays comfortably inside fp16 range.
+    w = mg / cnt
+    mean = (hg * w).sum(dim=(2, 3), keepdim=True)
+    var = (((hg - mean) ** 2) * w).sum(dim=(2, 3), keepdim=True)
+    out = ((hg - mean) / torch.sqrt(var + gn.eps)).view(b, c, t)
+    return out * gn.weight.view(1, c, 1) + gn.bias.view(1, c, 1)
+
+
 class Block1D(torch.nn.Module):
     def __init__(self, dim, dim_out, groups=8):
         super().__init__()
+        # Kept as a Sequential so checkpoint state_dict keys are unchanged;
+        # forward() applies the stages explicitly to route the mask into the
+        # GroupNorm statistics (see _masked_group_norm).
         self.block = torch.nn.Sequential(
             torch.nn.Conv1d(dim, dim_out, 3, padding=1),
             torch.nn.GroupNorm(groups, dim_out),
@@ -39,7 +69,9 @@ class Block1D(torch.nn.Module):
         )
 
     def forward(self, x, mask):
-        output = self.block(x * mask)
+        h = self.block[0](x * mask)
+        h = _masked_group_norm(h, mask, self.block[1])
+        output = self.block[2](h)
         return output * mask
 
 
@@ -397,7 +429,7 @@ class Decoder(nn.Module):
             for transformer_block in transformer_blocks:
                 x = transformer_block(
                     hidden_states=x,
-                    attention_mask=mask_down,
+                    attention_mask=(mask_down - 1.0) * 1e4,  # {0,1} -> additive (0 keep, -1e4 masked); raw {0,1} is a no-op bias
                     timestep=t,
                 )
             x = rearrange(x, "b t c -> b c t")
@@ -416,7 +448,7 @@ class Decoder(nn.Module):
             for transformer_block in transformer_blocks:
                 x = transformer_block(
                     hidden_states=x,
-                    attention_mask=mask_mid,
+                    attention_mask=(mask_mid - 1.0) * 1e4,  # {0,1} -> additive (0 keep, -1e4 masked); raw {0,1} is a no-op bias
                     timestep=t,
                 )
             x = rearrange(x, "b t c -> b c t")
@@ -430,7 +462,7 @@ class Decoder(nn.Module):
             for transformer_block in transformer_blocks:
                 x = transformer_block(
                     hidden_states=x,
-                    attention_mask=mask_up,
+                    attention_mask=(mask_up - 1.0) * 1e4,  # {0,1} -> additive (0 keep, -1e4 masked); raw {0,1} is a no-op bias
                     timestep=t,
                 )
             x = rearrange(x, "b t c -> b c t")

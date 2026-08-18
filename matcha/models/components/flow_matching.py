@@ -48,7 +48,14 @@ class BASECFM(torch.nn.Module, ABC):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-        z = torch.randn_like(mu) * temperature
+        # Mask the initial noise: in a BATCHED run the pad tail beyond each
+        # item's true mel length otherwise starts as live noise, which the
+        # (weakly masked) attention and boundary-crossing convs integrate
+        # into the REAL frames — a short item batched with much longer ones
+        # rendered as a clean-sounding wrong word (2026-08-18). Zeroed pads
+        # reproduce exactly what an UNBATCHED run sees past its boundary:
+        # nothing. No-op for unbatched runs (mask is all-ones).
+        z = torch.randn_like(mu) * temperature * mask
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
 
@@ -76,7 +83,10 @@ class BASECFM(torch.nn.Module, ABC):
         for step in range(1, len(t_span)):
             dphi_dt = self.estimator(x, mask, mu, t, spks, cond)
 
-            x = x + dt * dphi_dt
+            # Re-mask the solver state: the estimator emits nonzero values in
+            # the pad region (its internal masking is not airtight); left in,
+            # they re-enter the next step as live pad content. See forward().
+            x = (x + dt * dphi_dt) * mask
             t = t + dt
             sol.append(x)
             if step < len(t_span) - 1:
